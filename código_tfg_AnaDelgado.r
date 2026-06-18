@@ -1138,12 +1138,12 @@ dev.off()
 #is_major (0.16) y actor2_roi_medio (0.13), indicando que el historial tanto del escritor como del director y los actores principales son
 #fuertes predictores del éxito de la película.
 #runtimeMinutes (0.10), actor3_roi_medio (0.09) y genre_comedy (0.06) tienen baja correlación pero positiva con log_ROI.
-#log_buget tiene correlación casi nula (-0.04) confirmando que el presupuesto solo no predice el ROI
+#log_budget tiene correlación casi nula (-0.04) confirmando que el presupuesto solo no predice el ROI
 #En general, no hay multicolinealidad grave entre predictoras. El único caso preocupante es la correlación de -0.62 entre num_actores
 #y genre_other (las películas con menos actores registrados suelen ser las que no tienen géneros principales). De hecho, num_actores tiene
 #una correlación de 0.00 con log_ROI y genre_other de -0.02. Es decir, ninguna de las dos tiene apenas relación con la variable objetivo individualmente.
 #Como hemos visto, la correlación más alta con log_ROI es de 0.25, es decir, las correlaciones en general son bajas. Esto sugiere que las relaciones
-#no son lineales y que modelos como Random Forest o XGBoost captarán mejor los patrones que la regresión lineal.
+#no son lineales y que modelos como Random Forest o XGBoost captarán mejor los patrones que la regresión logística.
 
 #log_buget tiene correlación alta con is_major (0.42), actor1_num_films (0.36). actor1_num_films y actor2_num_films tienen una correlación de 0.33
 #genre_adventure y genre_animation tienen una correlación de 0.40
