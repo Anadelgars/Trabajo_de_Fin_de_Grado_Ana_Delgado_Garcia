@@ -635,7 +635,7 @@ ggplot(datos, aes(x=exito, fill=exito)) +
 
 ggsave("02_graficos_EDA/02_distribucion_exito.png", width = 8, height = 5, dpi = 300)
 
-# COMENTARIOS. Representación con un gráfico de barras de la variable binaria éxito con 6262 0 y 4537 1. 
+# COMENTARIOS. Representación con un gráfico de barras de la variable binaria éxito con 6092 0 y 4443 1. 
 
 
 # 3. Distribución de variable presupuesto (budget) y tomando su logaritmo (4.)
