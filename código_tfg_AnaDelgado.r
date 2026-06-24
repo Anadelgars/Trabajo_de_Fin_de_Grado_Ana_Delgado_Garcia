@@ -7,7 +7,7 @@ install.packages(c("readr", "data.table", "tidyverse", "dplyr",
                     "httr", "jsonlite", "future.apply", "ggplot2",
                     "gridExtra", "corrplot", "caret", "pROC",
                     "glmnet", "randomForest", "xgboost", "shapviz",
-                    "remotes", "dotenv"))
+                    "remotes", "dotenv", "moments", "robustbase"))
 remotes::install_version("xgboost", version = "1.7.7.1")
 
 #Lectura de paquetes
@@ -28,6 +28,9 @@ library(randomForest)
 library(remotes)
 library(xgboost)
 library(shapviz)
+library(moments)
+library(robustbase)
+library(mice)
 library(dotenv)
 load_dot_env()
 
@@ -736,10 +739,13 @@ ggplot(datos_con_ratings, aes(x=averageRating, y=log_ROI))+
 
 ggsave("02_graficos_EDA/08_BloqueRatings_1.png", width = 8, height = 5, dpi = 300)
 
-cor(datos_con_ratings$log_ROI, datos_con_ratings$averageRating) # 0,251
+skewness(datos_con_ratings$averageRating) # -0,772
+kurtosis(datos_con_ratings$averageRating) # 4,426
+#alejado de los valores de normalidad, sobre todo en curtosis.
+cor(datos_con_ratings$log_ROI, datos_con_ratings$averageRating, method = "spearman") # 0,279
 
 # COMENTARIOS.
-#La pendiente positiva confirma que las películas mejor valoradas tienden a tener mayor ROI, con una correlación de 0.25.
+#La pendiente positiva confirma que las películas mejor valoradas tienden a tener mayor ROI, con una correlación de 0.279.
 #Sin embargo la nube de puntos es muy dispersa, lo que indica que la relación existe pero es débil.
 #Hay además una asimetría clara: con ratings bajos (2-4) el ROI puede ser muy negativo, mientras que con ratings altos (7-9) el ROI tiene más variabilidad vertical.
 #Es decir, una buena valoración no garantiza ROI alto, pero una mala valoración sí tiende a asociarse con ROI bajo.
@@ -757,10 +763,13 @@ ggplot(datos_con_ratings, aes(x = log(numVotes), y = log_ROI)) +
 
 ggsave("02_graficos_EDA/09_BloqueRatings_2.png", width = 8, height = 5, dpi = 300)
 
-cor(datos_con_ratings$log_ROI, log(datos_con_ratings$numVotes)) #0,324
+skewness(log(datos_con_ratings$numVotes)) # -0,769
+kurtosis(log(datos_con_ratings$numVotes)) # 3,534
+#cerca de los valores de normalidad (0 y 3, respectivamente) pero suficientemente alejados como para que no se pueda asumir normalidad
+cor(datos_con_ratings$log_ROI, log(datos_con_ratings$numVotes), method = "spearman") #0,392
 
 # COMENTARIOS.
-#La correlación es 0.324 y la pendiente es más pronunciada que en el gráfico anterior. La interpretación es que la popularidad de una película, medida por el
+#La correlación es 0.392 y la pendiente es más pronunciada que en el gráfico anterior. La interpretación es que la popularidad de una película, medida por el
 #número de personas que se molestan en votarla, es mejor predictor del ROI que la valoración en sí misma. Esto tiene sentido dado que una película muy vista
 #genera muchos votos independientemente de si gusta mucho o poco, y una película muy vista es una película que ha recaudado mucho.
 # Así, tanto el ROI como el número de votos son consecuencia del éxito comercial (reforzando que no se pueda usar en el análisis)
@@ -1121,10 +1130,56 @@ vars_numericas <- datos[, .(log_budget, decade, runtimeMinutes, num_genres, num_
   log_ROI
 )]
 
-par(mfrow=c(1,1))
-cor_matrix <- cor(vars_numericas, use = "pairwise.complete.obs")
+#Se comprueba la normalidad de las variables numéricas mediante la asimetría (mide si la distribución está sesgada hacia un lado)
+#y la curtosis (mide si las colas son más pesadas o más ligeras que las de una normal). La normal tiene asimetría 0 y curtosis 3
 
-library(corrplot)
+normalidad <- data.frame(
+  skewness = sapply(vars_numericas, function(x)
+    skewness(na.omit(x))),
+  kurtosis = sapply(vars_numericas, function(x)
+    kurtosis(na.omit(x)))
+)
+
+normalidad
+#                      skewness    kurtosis
+# log_budget         -1.3079471    5.421494
+# decade             -0.3563105    2.276940
+# runtimeMinutes      1.3951838    7.709784
+# num_genres         -1.0520119    2.696420
+# num_directors      25.9157226 1200.451923
+# num_actores        -8.0831327   67.911016
+# is_major            0.9977741    1.995553
+# director_num_films  3.4707006   20.623100
+# director_roi_medio -0.4447586    5.436799
+# writer_num_films    6.5644944   65.062412
+# writer_roi_medio   -0.2879115    5.524914
+# actor1_num_films    2.6626414   11.413703
+# actor1_roi_medio   -0.4299890    6.403817
+# actor2_num_films    2.5543055   11.035415
+# actor2_roi_medio   -0.4841036    5.438961
+# actor3_num_films    2.8953119   13.894474
+# actor3_roi_medio   -0.5258584    4.980582
+# genre_drama        -0.1123744    1.012628
+# genre_comedy        0.4925014    1.242558
+# genre_action        1.1417485    2.303590
+# genre_crime         1.6403990    3.690909
+# genre_adventure     1.6527764    3.731670
+# genre_romance       1.9015075    4.615731
+# genre_thriller      1.9513014    4.807577
+# genre_horror        2.5239975    7.370563
+# genre_mystery       2.8335745    9.029144
+# genre_fantasy       3.2042625   11.267298
+# genre_biography     3.5995908   13.957054
+# genre_family        3.6535294   14.348277
+# genre_scifi         3.6707699   14.474552
+# genre_animation     3.7635589   15.164376
+# genre_other         7.9544444   64.273185
+# log_ROI            -0.3847608    3.789216
+
+#Hay desviaciones relevantes respecto a la normalidad. Se decide utilizar el coeficiente de correlación de Spearman que no requiere este supuesto.
+
+par(mfrow=c(1,1))
+cor_matrix <- cor(vars_numericas, use = "pairwise.complete.obs", method = "spearman")
 
 png(filename = "02_graficos_EDA/26_matriz_correlaciones.png", width = 1400, height = 1400, res=170)
 corrplot(cor_matrix, method = "color", type = "upper",
@@ -1134,18 +1189,18 @@ corrplot(cor_matrix, method = "color", type = "upper",
 dev.off()
 
 # COMENTARIOS.
-#La variable más correlacionada con log_ROI es writer_roi_medio, con un 0.25. Le siguen director_roi_medio (0.24), actor1_roi_medio (0.17),
-#is_major (0.16) y actor2_roi_medio (0.13), indicando que el historial tanto del escritor como del director y los actores principales son
+#La variable más correlacionada con log_ROI es writer_roi_medio, con un 0.25. Le siguen director_roi_medio (0.24), actor1_roi_medio (0.18),
+#is_major (0.16) y actor2_roi_medio (0.14), sugiriendo que el historial tanto del escritor como del director y los actores principales son
 #fuertes predictores del éxito de la película.
-#runtimeMinutes (0.10), actor3_roi_medio (0.09) y genre_comedy (0.06) tienen baja correlación pero positiva con log_ROI.
-#log_budget tiene correlación casi nula (-0.04) confirmando que el presupuesto solo no predice el ROI
-#En general, no hay multicolinealidad grave entre predictoras. El único caso preocupante es la correlación de -0.62 entre num_actores
+#runtimeMinutes (0.11), actor3_roi_medio (0.10) y genre_comedy (0.06) tienen baja correlación pero positiva con log_ROI.
+#log_budget tiene correlación casi nula (0.02) confirmando que el presupuesto solo no predice el ROI
+#En general, no hay multicolinealidad grave entre predictoras. El único caso preocupante es la correlación de -0.61 entre num_actores
 #y genre_other (las películas con menos actores registrados suelen ser las que no tienen géneros principales). De hecho, num_actores tiene
 #una correlación de 0.00 con log_ROI y genre_other de -0.02. Es decir, ninguna de las dos tiene apenas relación con la variable objetivo individualmente.
 #Como hemos visto, la correlación más alta con log_ROI es de 0.25, es decir, las correlaciones en general son bajas. Esto sugiere que las relaciones
-#no son lineales y que modelos como Random Forest o XGBoost captarán mejor los patrones que la regresión logística.
+#no son monótonas y que modelos como Random Forest o XGBoost captarán mejor los patrones que la regresión logística.
 
-#log_buget tiene correlación alta con is_major (0.42), actor1_num_films (0.36). actor1_num_films y actor2_num_films tienen una correlación de 0.33
+#log_buget tiene correlación alta con is_major (0.48), actor1_num_films (0.52) y director_num_films (0.53). actor1_num_films y actor2_num_films tienen una correlación de 0.46
 #genre_adventure y genre_animation tienen una correlación de 0.40
 
 #Investigamos las celdas en las que aparece un símbolo de interrogación ? (num_actores con actor3_num_films y con actor3_roi_medio)
@@ -1204,34 +1259,51 @@ sum(is.na(datos$actor3_roi_medio)) #6961 NA
 
 #Identificar valores extremos que puedan distorsionar el modelo.
 
-# Boxplots de las variables numéricas más importantes
+# Boxplots de las variables numéricas más importantes. Dado que no hay simetría ni normalidad en las variables, se emplea el método de Hubert y Vandervieren
 
-png("02_graficos_EDA/27_boxplots_outliers.png", width = 1200, height = 500, res = 150)
-par(mfrow = c(1,3))
+png("02_graficos_EDA/27_boxplots_outliers.png", width = 1200, height = 600, res = 150)
+par(mfrow=c(1,3))
 
-boxplot(datos$log_ROI, main = "Outliers en log_ROI", ylab = "log(ROI+1)",col = "steelblue")
+adjbox(datos$log_ROI, main = "Outliers en log_ROI", ylab = "log(ROI+1)", col = "steelblue")
 
-#Hay outliers en ambas direcciones pero especialmente hacia arriba. Los puntos por encima de 4 son películas con ROI extraordinariamente alto
-#(blockbusters inesperados o películas con presupuesto mínimo y gran recaudación). Los outliers hacia abajo son películas que perdieron casi toda su inversión.
+#Hay únicamente outliers hacia arriba, por encima de 2,84 (que equivale a un ROI de 16,1, es decir, películas que multiplican por 17 su inversión)
 
-boxplot(datos$log_budget, main = "Outliers en log_budget", ylab = "log(budget)",col = "steelblue")
+adjbox(datos$log_budget, main = "Outliers en log_budget", ylab = "log(budget)", col = "steelblue")
 
-#Los outliers están únicamente hacia abajo, es decir, películas con presupuestos pequeños. Esto coincide con lo que vimos en el histograma
-#del grupo pequeño separado del resto de películas independientes con presupuestos muy bajos. 
+#Hay outliers en ambas direcciones pero principalmente hacia abajo, películas con presupuestos considerablemente bajos
 
-boxplot(datos$runtimeMinutes, main = "Outliers en runtimeMinutes", ylab = "Minutos",col = "steelblue")
+adjbox(datos$runtimeMinutes, main = "Outliers en runtimeMinutes", ylab = "Minutos", col = "steelblue")
 
-#Hay algunos outliers hacia arriba, con duraciones de más de 250-300 minutos.
+#Hay outliers en ambas direcciones. Los outliers hacia arriba están más dispersos, en un rango de 188 a +300 minutos. Corresponden
+#a películas con duraciones extremadamente largas o cortas, pero eso no quita que sean casos reales y legítimos.
 
 dev.off()
 par(mfrow=c(1,1))
 
-#Comprobamos cómo son esos outliers.
-datos[runtimeMinutes>240, .(primaryTitle, runtimeMinutes)]
+#Valores medcouple para el cálculo de los bigotes. El medcouple para distribuciones simétricas es 0.
+mc(datos$log_ROI) # -0,143, distribución con cola larga a la izquierda
+mc(datos$log_budget) # -0,153, distribución con cola larga a la izquierda
+mc(datos$runtimeMinutes) # 0,2, distribución con cola larga a la derecha
 
-#Las películas con duración de más de 240 minutos corresponden a casos atípicos que definitivamente no representan el cine comercial.
-#Sin embargo, la duración extrema es información legítima y no un error en el dato..Al no haber criterios objetivos para excluir
-#estas películas y ser tan pocas (6), se mantienen como casos atípicos pero legítimos (el impacto en el modelo no será grande al ser tan pocas).
+# Conteo de outliers en las 3 variables 
+out_logROI <- adjboxStats(datos$log_ROI)
+sum(datos$log_ROI < out_logROI$fence[1] | datos$log_ROI > out_logROI$fence[2], na.rm = TRUE) #329
+
+out_logbudget <- adjboxStats(datos$log_budget)
+sum(datos$log_budget < out_logbudget$fence[1] | datos$log_budget > out_logbudget$fence[2], na.rm = TRUE) #306
+
+out_runtime <- adjboxStats(datos$runtimeMinutes)
+sum(datos$runtimeMinutes < out_runtime$fence[1] | datos$runtimeMinutes > out_runtime$fence[2], na.rm = TRUE) #244
+
+# Límites exactos de los bigotes
+out_logROI$fence # -5.034094  2.838759
+out_logbudget$fence #  9.447311 19.089131
+out_runtime$fence #  78.15016 188.32946
+
+#Los outliers en las tres variables analizadas corresponden con información atípica pero legítima. Se trata de entre el 2,3% y el 3,1%
+#del total de observaciones. Esto es una característica de los datos dada la alta variabilidad que hay en la industria cinematográfica,
+#luego al no haber criterior objetivos para excluir estas observaciones se mantienen en el conjunto de datos.
+
 
 dim(datos) #10535 filas y 49 cols.
 names(datos)
@@ -1247,7 +1319,7 @@ saveRDS(datos, "02_datos_post_EDA.rds")
 # -------- #
 
 #Empleamos 3 modelos: regresión logística, Random Forest y XGBoost, en ese orden. Evaluamos los 3 modelos
-#con AUC-ROC, F1 score y matriz de confusión. Haremos un train/test split aleatorio, común para los 3 modelos
+#con AUC, F1 score y matriz de confusión. Haremos un train/test split aleatorio, común para los 3 modelos
 #que mantenga las proporciones de la variable objetivo éxito, y hacemos validación cruzada con 5 folds en el
 #conjunto de entrenamiento (en los tres modelos y con la misma configuración)
 
@@ -1261,23 +1333,201 @@ datos[, runtimeMissing := as.integer(as.character(runtimeMissing))]
 #Creamos una variable idéntica a éxito pero con niveles explícitos (necesaria para Regresión logística y Random Forest)
 datos[, exito_factor := factor(ifelse(exito == 1, "exito", "fracaso"), levels = c("fracaso", "exito"))]
 
-# Dataset para Random Forest y XGBoost (con NAs)
-datos_rf <- datos
+# COMPARACIÓN DE MÉTODOS DE IMPUTACIÓN (para los modelos de Regresión Logística y Random Forest). El mejor método será el que mantenga más la distribución original de los datos
+
+# Variables que vamos a imputar (los dos grupos descritos en el análisis de valores perdidos del EDA)
+vars_imputar <- c("director_roi_medio", "writer_roi_medio", "actor1_roi_medio", "actor2_roi_medio", "actor3_roi_medio", "director_num_films",
+                  "writer_num_films", "actor1_num_films", "actor2_num_films", "actor3_num_films", "num_directors", "num_writers")
+
+# Variables predictoras que usará mice para imputar. Usamos solo las que tienen sentido conceptual como predictoras del historial
+vars_predictoras_mice <- c("log_budget", "decade", "is_major", "num_genres", "release_month")
+
+# Construimos el dataset que usará mice: solo las variables a imputar más las predictoras.
+datos_para_mice <- datos[, c(vars_imputar, vars_predictoras_mice), with = FALSE]
+
+datos_para_mice[, release_month := as.integer(release_month)] # Convertimos release_month a numérico para que mice pueda usarlo
+
+# Definimos la matriz de predicción de mice. Esta matriz indica qué variables se usan para imputar cada variable.
+# Filas = variable a imputar, Columnas = variable predictora. 1 significa "usar como predictora", 0 significa "no usar"
+
+ini <- mice(datos_para_mice, maxit = 0) # inicialización sin iterar
+pred_matrix <- ini$predictorMatrix
+
+# Ponemos a 0 todas las filas de las variables que NO tienen NAs (las variables predictoras no necesitan ser imputadas)
+for (v in vars_predictoras_mice) {
+  pred_matrix[v, ] <- 0
+}
+
+# Para cada variable a imputar, solo usamos las variables predictoras que definimos antes, no otras variables de historial
+for (v in vars_imputar) {
+  pred_matrix[v, ] <- 0  # primero ponemos todo a 0
+  for (p in vars_predictoras_mice) {
+    if (p %in% colnames(pred_matrix)) {
+      pred_matrix[v, p] <- 1  # luego activamos solo las predictoras elegidas
+    }
+  }
+}
+
+# Aplicamos mice con cada método
+set.seed(42)
+imp_pmm <- mice(datos_para_mice, method = "pmm", 
+                m = 1, maxit = 5, # m=1 un único dataset imputado, maxit = 5 número de iteraciones del algoritmo
+                predictorMatrix = pred_matrix, 
+                printFlag = FALSE)
+
+set.seed(42)
+imp_norm <- mice(datos_para_mice, method = "norm", 
+                 m = 1, maxit = 5,
+                 predictorMatrix = pred_matrix,
+                 printFlag = FALSE)
+
+set.seed(42)
+imp_cart <- mice(datos_para_mice, method = "cart", 
+                 m = 1, maxit = 5,
+                 predictorMatrix = pred_matrix,
+                 printFlag = FALSE)
+
+set.seed(42)
+imp_mean <- mice(datos_para_mice, method = "mean", 
+                 m = 1, maxit = 5,
+                 predictorMatrix = pred_matrix,
+                 printFlag = FALSE)
+
+# Extraemos los datasets completos imputados
+datos_pmm  <- complete(imp_pmm,  1)
+datos_norm <- complete(imp_norm, 1)
+datos_cart <- complete(imp_cart, 1)
+datos_mean <- complete(imp_mean, 1)
+
+# Calculamos también la imputación por mediana como referencia
+datos_mediana <- copy(as.data.table(datos_para_mice))
+for (v in vars_imputar) {
+  med <- median(datos_mediana[[v]], na.rm = TRUE)
+  datos_mediana[is.na(get(v)), (v) := med]
+}
+
+dir.create("02_graficos_EDA/imputacion", showWarnings = FALSE)
+
+# Función que genera el gráfico de comparación de densidades para una variable
+comparar_densidades <- function(variable) {
+  
+  originales <- datos[[variable]][!is.na(datos[[variable]])] # Valores originales (solo los observados, no los imputados)
+  
+  idx_na <- is.na(datos_para_mice[[variable]]) # Valores imputados por cada método. Solo tomamos los que eran NA originalmente
+  
+  df_plot <- data.frame(
+    valor = c(
+      originales,
+      as.data.table(datos_pmm)[[variable]][idx_na],
+      as.data.table(datos_norm)[[variable]][idx_na],
+      as.data.table(datos_cart)[[variable]][idx_na],
+      as.data.table(datos_mean)[[variable]][idx_na],
+      datos_mediana[[variable]][idx_na]
+    ),
+    metodo = c(
+      rep("Original", length(originales)),
+      rep("PMM", sum(idx_na)),
+      rep("Norm", sum(idx_na)),
+      rep("CART", sum(idx_na)),
+      rep("Mean", sum(idx_na)),
+      rep("Mediana", sum(idx_na))
+    )
+  )
+  
+  ggplot(df_plot, aes(x = valor, color = metodo, linetype = metodo)) +
+    geom_density(linewidth = 0.8) +
+    scale_color_manual(values = c(
+      "Original" = "black",
+      "PMM"      = "steelblue",
+      "Norm"     = "tomato",
+      "CART"     = "seagreen",
+      "Mean"     = "orange",
+      "Mediana"  = "purple"
+    )) +
+    scale_linetype_manual(values = c(
+      "Original" = "solid",
+      "PMM"      = "dashed",
+      "Norm"     = "dashed",
+      "CART"     = "dashed",
+      "Mean"     = "dotted",
+      "Mediana"  = "dotted"
+    )) +
+    labs(
+      title = paste("Comparación de métodos de imputación:", variable),
+      x = variable,
+      y = "Densidad",
+      color = "Método",
+      linetype = "Método"
+    ) +
+    theme_minimal()
+}
+
+# Generamos y guardamos los gráficos para cada variable de roi_medio
+vars_roi <- c("director_roi_medio", "writer_roi_medio", "actor1_roi_medio", "actor2_roi_medio", "actor3_roi_medio")
+
+for (v in vars_roi) {
+  p <- comparar_densidades(v)
+  ggsave(paste0("02_graficos_EDA/imputacion/densidad_", v, ".png"),
+         plot = p, width = 10, height = 6, dpi = 300)
+}
+# Se comprueba únicamente cómo cambia la distribución de los datos en el conjunto de variables con un porcentaje de NAs entre el 46%
+#y el 66%, ya que en el otro conjunto (con <2%) el método de imputación no será sustancialmente distinto al ser un porcentaje tan bajo del total.
+
+#En los 5 casos, la imputación que mejor se parece a la distribución original de los datos es PMM, luego obtenemos esa como método de
+#imputación para los modelos de Regresión Logística y Random Forest, que requieren imputación de NAs previa.
+
+#Dataset para XGBoost (con NAs)
 datos_XGB <- copy(datos)
 
-# Dataset para regresión logística (con indicadoras y NAs reemplazados por 0)
+#Guardamos la máscara de NAs antes de la imputación (para crear posteriormente las variables indicadoras)
+mascara_nas <- datos[, lapply(.SD, is.na), .SDcols = vars_imputar]
+
+# Verificamos que la máscara tiene los porcentajes correctos (los mismos que en el análisis de NAs del EDA)
+for (v in vars_imputar) {
+  cat(v, ":", round(mean(mascara_nas[[v]]) * 100, 2), "% de NAs\n")
+}
+
+# Extraemos el dataset imputado
+datos_imputados_pmm <- as.data.table(complete(imp_pmm, 1))
+
+# Verificamos que no quedan NAs en las variables imputadas
+colSums(is.na(datos_imputados_pmm[, vars_imputar, with = FALSE])) #Todos son 0.
+
+# Reincorporamos las variables imputadas al dataset completo datos, sustituyendo solo las columnas que tenían NAs.
+for (v in vars_imputar) {
+  datos[[v]] <- datos_imputados_pmm[[v]]
+}
+
+# Verificamos que no quedan NAs en datos
+colSums(is.na(datos[, vars_imputar, with = FALSE])) #Todos son 0.
+ 
+#Creamos las variables indicadoras usando la máscara de NAs originales
+for (v in vars_imputar) {
+  nombre_indicadora <- paste0(v, "_missing")
+  datos[[nombre_indicadora]] <- as.integer(mascara_nas[[v]])
+}
+
+# Verificamos que las indicadoras tienen los porcentajes correctos
+for (v in vars_imputar) {
+  nombre_indicadora <- paste0(v, "_missing")
+  pct <- round(mean(datos[[nombre_indicadora]]) * 100, 2)
+  cat(nombre_indicadora, ":", pct, "%\n")
+}
+
+# Dataset para Random Forest y Regresión Logística.
+datos_rf <- copy(datos)
 datos_RLogistica <- copy(datos)
 
-# Partición train/test del conjunto de datos, usando DataPartition para hacer un split estratificado, es decir,
-#manteniendo la misma proporción de éxitos y fracasos en ambos grupos, de forma que el modelo sea más representativo.
+# Partición train/test del conjunto de datos. Hacemos una partición estratificada y una normal para comparar resultados.
 set.seed(42)
 train_index <- createDataPartition(datos$exito, p=0.8, list=FALSE)
+#train_index2<- sample(seq_len(nrow(datos)), 0.8 * nrow(datos))
 
 # Definimos el control de cross validation (igual para los 3 modelos)
 ctrl <- trainControl(
   method = "cv",
   number = 5,
-  classProbs = TRUE,       # necesario para calcular AUC-ROC
+  classProbs = TRUE,       # necesario para calcular AUC
   summaryFunction = twoClassSummary,  # métricas para clasificación binaria, calcula AUC, sensibilidad y especificidad
   savePredictions = TRUE
 )
@@ -1286,21 +1536,7 @@ ctrl <- trainControl(
 
 # 1.1. Preparación previa.
 
-#Creamos las variables indicadoras de missing en director, escritor y actores principales
-#(tanto num_films como roi_medio, aunque el porcentaje de NAs en ambos conjuntos sea muy distinto)
-#y después imputamos con 0 los NA (en regresión logística no puede haber NA)
-
-for (var in c("director_roi_medio", "writer_roi_medio", "actor1_roi_medio", "actor2_roi_medio", "actor3_roi_medio")) {
-  datos_RLogistica[, paste0(var, "_missing") := as.integer(is.na(get(var)))]
-  datos_RLogistica[is.na(get(var)), (var) := 0]
-}
-
-for (var in c("director_num_films", "writer_num_films", "actor1_num_films", "actor2_num_films", "actor3_num_films", "num_directors", "num_writers")) {
-  datos_RLogistica[, paste0(var, "_missing") := as.integer(is.na(get(var)))]
-  datos_RLogistica[is.na(get(var)), (var) := 0]
-}
-
-#Eliminamos la variable genre_other por la multicolinealidad con num_actores (-0.62) y la poca influencia de esa variable a la variable objetivo (correlación casi nula)
+#Eliminamos la variable genre_other por la multicolinealidad con num_actores (-0.61) y la poca influencia de esa variable a la variable objetivo (correlación casi nula)
 datos_RLogistica[, genre_other:=NULL]
 
 #Creamos variables dummies de release_month y original_language (en reg.log. las variables de tipo factor no se manejan bien)
@@ -1312,7 +1548,7 @@ dummies_idioma[, `(Intercept)` := NULL]
 datos_RLogistica <- cbind(datos_RLogistica, dummies_mes, dummies_idioma)
 datos_RLogistica[, c("release_month", "original_language") := NULL]
 
-#Conjuntos de train y test para Regresión logística
+#Conjuntos de train y test para Regresión logística (con partición estratificada)
 train_RLog <- datos_RLogistica[train_index, ]
 test_RLog <- datos_RLogistica[-train_index, ]
 
@@ -1344,7 +1580,8 @@ for (v in vars_scale){
   test_RLog_scaled[, (v) := (get(v) - medias[v]) / desv_tip[v]]
 }
 
-table(train_RLog_scaled$num_directors_missing) # 8333 ceros y 96 unos.
+table(train_RLog_scaled$num_directors_missing) # 8424 ceros y 5 unos.
+table(train_RLog_scaled$num_writers_missing) # 8333 ceros y 96 unos.
 
 # Variables que NO entran como predictoras
 vars_exc_RLog <- c("tconst", "primaryTitle", "log_ROI", "exito", "exito_factor",
@@ -1352,7 +1589,7 @@ vars_exc_RLog <- c("tconst", "primaryTitle", "log_ROI", "exito", "exito_factor",
 #excluimos log_ROI porque el éxito es una función directa del ROI (por cómo la definimos, éxito := ROI>=1), luego sería data leakage
 #excluimos num_directors_missing y num_writers_missing por falta de variabilidad (5 valores en 1 frente a 8424 en 0 y 96 valores en 1 frente a 8333 en 0, respectivamente)
 #que hace que el modelo no pueda estimar estos coeficientes con fiabilidad (se evaluó el modelo con dichas variables en él y había singularidades)
-#excluimos actor3_num_films_missing porque tiene una correlación con num_actores de un -0.957, lo que
+#excluimos actor3_num_films_missing porque tiene una correlación con num_actores de un -0.999, lo que
 #indica una colinealidad casi perfecta. Si se incluyen ambas variables en el modelo, aparece otra singularidad.
 
 # Variables predictoras para regresión logística
@@ -1373,45 +1610,43 @@ modelo_RLog <- train(
 # 1.3. Resultados
 
 print(modelo_RLog) #Resultados de cross validation
-#Modelo entrenado con 8429 observaciones y 58 predictoras. AUC-ROC en cross validation es 0.666, con sensibilidad de 0.420
-#y especificidad de 0.789. Esto sugiere que el modelo identifica mucho mejor los fracasos (especificidad alta) que los éxitos (sensibilidad baja)
+#Modelo entrenado con 8429 observaciones y 58 predictoras. AUC en cross validation es 0.660, con sensibilidad de 0.426
+#y especificidad de 0.784. Esto sugiere que el modelo identifica mucho mejor los fracasos (especificidad alta) que los éxitos (sensibilidad baja)
 
 # Resumen del modelo
 summary(modelo_RLog)
 #Resultados de los coeficientes (solamente se muestran los que son significativos, es decir, p-valor<0.05)
-#Coefficients:
+# Coefficients:
 #                             Estimate Std. Error z value Pr(>|z|)    
-# (Intercept)                -1.005875   0.210969  -4.768 1.86e-06 ***    
-# runtimeMinutes              0.330381   0.030682  10.768  < 2e-16 ***   
-# is_major                    0.611215   0.059915  10.201  < 2e-16 ***   
-# director_roi_medio          0.136363   0.028535   4.779 1.76e-06 ***
-# num_writers                 0.141927   0.027306   5.198 2.02e-07 ***
-# writer_num_films            0.073799   0.029160   2.531 0.011380 *  
-# writer_roi_medio            0.161942   0.029306   5.526 3.28e-08 ***  
-# actor1_roi_medio            0.096167   0.025603   3.756 0.000173 ***  
-# actor2_roi_medio            0.077972   0.025108   3.105 0.001900 ** 
-# actor3_num_films            0.098777   0.033759   2.926 0.003434 ** 
-# actor3_roi_medio            0.063377   0.024733   2.562 0.010393 *     
-# genre_comedy                0.445966   0.087158   5.117 3.11e-07 ***
-# genre_action                0.203483   0.093262   2.182 0.029121 *  
-# genre_adventure             0.207297   0.096703   2.144 0.032061 *  
-# genre_romance               0.212747   0.094562   2.250 0.024460 *  
-# genre_thriller              0.335655   0.095111   3.529 0.000417 ***
-# genre_horror                0.570221   0.107058   5.326 1.00e-07 ***
-# genre_mystery               0.277523   0.107632   2.578 0.009925 **    
-# genre_animation             0.350604   0.135895   2.580 0.009881 ** 
-# log_budget                 -0.340532   0.036312  -9.378  < 2e-16 ***   
-# actor3_roi_medio_missing    0.176318   0.074176   2.377 0.017453 *      
-# release_month6              0.226013   0.123065   1.837 0.066280 .  
-# release_month7              0.239864   0.123363   1.944 0.051850 .     
-# release_month9             -0.235895   0.116114  -2.032 0.042196 *  
-# release_month10            -0.315099   0.115522  -2.728 0.006379 **    
-# original_languagefr        -0.822190   0.152836  -5.380 7.47e-08 ***
-# original_languagehi        -0.298844   0.138165  -2.163 0.030546 *  
-# original_languageru        -0.454254   0.180579  -2.516 0.011885 *  
-
+# (Intercept)                -0.800484   0.209145  -3.827 0.000129 ***   
+# runtimeMinutes              0.335411   0.030557  10.977  < 2e-16 ***  
+# is_major                    0.615898   0.059832  10.294  < 2e-16 ***   
+# director_roi_medio          0.130772   0.024149   5.415 6.12e-08 ***
+# num_writers                 0.141410   0.026905   5.256 1.47e-07 ***
+# writer_num_films            0.068627   0.028860   2.378 0.017412 *  
+# writer_roi_medio            0.076188   0.023903   3.187 0.001435 **   
+# actor1_roi_medio            0.069243   0.023712   2.920 0.003499 ** 
+# actor3_num_films            0.094319   0.033400   2.824 0.004744 ** 
+# actor3_roi_medio            0.091772   0.023544   3.898 9.70e-05 ***   
+# genre_comedy                0.469166   0.086983   5.394 6.90e-08 ***
+# genre_action                0.217115   0.093108   2.332 0.019707 *     
+# genre_adventure             0.220195   0.096419   2.284 0.022387 *  
+# genre_romance               0.222020   0.094347   2.353 0.018611 *  
+# genre_thriller              0.332305   0.094815   3.505 0.000457 ***
+# genre_horror                0.588056   0.106702   5.511 3.56e-08 ***
+# genre_mystery               0.290884   0.107273   2.712 0.006696 **   
+# genre_family                0.247072   0.120829   2.045 0.040874 *   
+# genre_animation             0.356498   0.135824   2.625 0.008673 ** 
+# log_budget                 -0.338771   0.036325  -9.326  < 2e-16 ***   
+# writer_roi_medio_missing   -0.172067   0.061958  -2.777 0.005484 ** 
+# actor1_roi_medio_missing   -0.127913   0.061567  -2.078 0.037743 *  
+# release_month6              0.251614   0.122779   2.049 0.040431 *  
+# release_month7              0.271523   0.123067   2.206 0.027363 *  
+# release_month10            -0.284895   0.115292  -2.471 0.013471 *  
+# original_languagefr        -0.856455   0.152332  -5.622 1.88e-08 ***
+# original_languageru        -0.469961   0.179783  -2.614 0.008948 ** 
 #Los resultados son coherentes con lo visto en el EDA. Por ejemplo, que is_major empuja mucho hacia éxito, así como los géneros de horror,
-#comedy y animation o la duración de la película. log_budget empuja hacia fracaso, así como el mes de septiembre o el idioma francés.
+#comedy y animation o la duración de la película. log_budget empuja hacia fracaso, así como el mes de octubre o el idioma francés.
 
 # Predicciones en test
 pred_log_prob <- predict(modelo_RLog, newdata = as.data.frame(test_RLog_scaled[, ..vars_predictoras_RLog]), type = "prob")[, "exito"]
@@ -1420,17 +1655,17 @@ pred_log_clase <- predict(modelo_RLog, newdata = as.data.frame(test_RLog_scaled[
 # Matriz de confusión
 cm_RLog <- confusionMatrix(pred_log_clase, test_RLog_scaled$exito_factor, positive = "exito")
 print(cm_RLog)
-#          Reference
+#           Reference
 # Prediction fracaso exito
-#    fracaso     987   512
-#    exito       231   376
-#Accuracy de 0.6472 con diferencia estadísticamente significativa (p-valor < 0.05)
-#sensibilidad de 0.423 (el modelo solo identifica correctamente el 42% de los éxitos reales)
-#especificidad de 0.81 (el modelo identifica correctamente el 81% de los fracasos)
+#    fracaso     972   518
+#    exito       246   370
+#Accuracy de 0.6372 con diferencia estadísticamente significativa (p-valor < 0.05)
+#sensibilidad de 0.417 (el modelo solo identifica correctamente el 41,7% de los éxitos reales)
+#especificidad de 0.80 (el modelo identifica correctamente el 80% de los fracasos)
 #Esto confirma que el modelo es conservador, es decir, tiende a predecir fracaso. 
 
-#De 1218 fracasos reales (en test), se detectan correctamente 987 y erróneamente 231.
-#De 888 éxitos reales (en test), se detectan correctamente 376 y erróneamente 512.
+#De 1218 fracasos reales (en test), se detectan correctamente 972 y erróneamente 246.
+#De 888 éxitos reales (en test), se detectan correctamente 370 y erróneamente 518.
 
 #F1 score
 precision_RLog <- cm_RLog$byClass["Pos Pred Value"]
@@ -1438,7 +1673,7 @@ recall_RLog <- cm_RLog$byClass["Sensitivity"]
 
 f1_RLog <- 2 * precision_RLog * recall_RLog / (precision_RLog + recall_RLog)
 cat("F1 score:", round(f1_RLog, 4), "\n")
-#F1 = 0.503, esto refleja el bajo recall (la sensibilidad)
+#F1 = 0.492, esto refleja el bajo recall (la sensibilidad)
 
 # AUC-ROC
 roc_RLog <- roc(response = test_RLog_scaled$exito_factor,
@@ -1446,8 +1681,8 @@ roc_RLog <- roc(response = test_RLog_scaled$exito_factor,
               levels = c("fracaso", "exito"),
               direction = "<")
 auc(roc_RLog)
-#AUC-ROC = 0.676. Es mejor que el azar aunque tiene margen de mejora y consistente
-#con el 0.666 del cross.validation, lo que indica que el modelo no está sobreajustado
+#AUC-ROC = 0.664. Es mejor que el azar aunque tiene margen de mejora y consistente
+#con el 0.660 del cross.validation, lo que indica que el modelo no está sobreajustado
 
 # Curva ROC
 png("02_graficos_modelado/01_curva_ROC_RLogistica.png", width = 800, height = 800, res = 150)
@@ -1458,11 +1693,12 @@ dev.off()
 #coherente con la matriz de confusión.
 
 ## Resumen de conclusiones:
-#AUC-ROC: 0.676
-#F1: 0.503
-# Accuracy: 0.647
-#Sensibilidad: 0.423
-#Especificidad: 0.810
+#AUC (CV): 0.660
+#AUC (test): 0.664
+#F1: 0.492
+# Accuracy: 0.637
+#Sensibilidad: 0.417
+#Especificidad: 0.800
 
 
 # 2. Random Forest.
@@ -1480,7 +1716,7 @@ vars_predictoras_RF <- setdiff(names(train_rf), vars_exc_RF)
 # 2.2. Búsqueda de hiperparámetros.
 
 p <- length(vars_predictoras_RF)
-mtry_default <- round(sqrt(p))
+mtry_default <- floor(sqrt(p))
 
 tune_grid_rf <- expand.grid(mtry = unique(c(max(2, mtry_default - 3), max(2, mtry_default - 1),
                                         mtry_default, mtry_default + 2, mtry_default + 4)
@@ -1504,29 +1740,46 @@ modelo_RF <- train(
   trControl = ctrl,
   tuneGrid = tune_grid_rf,
   metric = "ROC",
-  ntree = 500,
-  preProcess = "medianImpute" #Imputación interna por la mediana (los NAs no se pueden dejar como NA)
+  ntree = 500
 )
 
 # 2.4. Resultados.
 
 print(modelo_RF)
-# Modelo entrenado con 8429 observaciones y 36 predictoras. El número de variables óptimas en cada split (mtry) es 3, número con el cual
-#obtenemos el mejor AUC-ROC, de 0.687 (que mejora ligeramente respecto a regresión logística con un 0.666). De hecho, a mayor mtry, el AUC-ROC baja,
+# Modelo entrenado con 8429 observaciones y 48 predictoras. El número de variables óptimas en cada split (mtry) es 3, número con el cual
+#obtenemos el mejor AUC, de 0.685 (que mejora ligeramente respecto a regresión logística con un 0.660). De hecho, a mayor mtry, el AUC baja,
 #lo que sugiere que el modelo generaliza mejor con pocas variables en cada split (un mytr bajo ayuda a que no siempre dominen las mismas variables en cada árbol,
 #aumentando la diversidad y mejorando la generalización). Los árboles individuales son más débiles pero más diversos entre sí (cada uno ve subconjuntos
 #distintos de variables), haciendo que al promediarlos el ensemble generalice mejor.
 
 #Importancia de variables (qué variables contribuyen más a predecir exito_factor)
 varImp(modelo_RF)
+#                    Overall
+# release_month       100.00
+# log_budget           79.39
+# director_roi_medio   74.93
+# writer_roi_medio     73.06
+# runtimeMinutes       72.64
+# actor1_roi_medio     72.26
+# actor3_roi_medio     71.50
+# actor2_roi_medio     69.25
+# actor1_num_films     37.82
+# num_writers          36.73
+# decade               36.12
+# director_num_films   32.23
+# original_language    30.90
+# actor2_num_films     28.61
+# writer_num_films     24.60
+# actor3_num_films     23.64
+# is_major             19.84
+# num_genres           18.46
+# genre_drama          15.08
+# genre_comedy         14.33
 # COMENTARIOS.
 #Overall indica la importancia relativa (a mayor valor más útil dicha variable), está escalada para que la más importante valga 100
 #las variables más importantes ayudan más a separar entre éxito o fracaso, que no es lo mismo que decir que las variables causen el éxito
-#Las variables más importantes son release_month, log_budget y runtimeMinutes, seguidas de las variables de historial del director, escritor y actores.
-#No se puede asumir que estas 3 primeras variables sean las que mejor predicen el éxito, sino que son las más consistentemente disponibles
-#(las variables de historial tienen una cantidad demasiado grande de NA, y aunque el modelo los trata internamente, asigna menos importancia
-#a estas variables porque al estar imputadas se pierde variabilidad, es decir, muchos valores son iguales).
-#Aún así, los resultados de validación muestran que este modelo está capturando mejor las relaciones reales entre las variables y el éxito.
+#Estas son release_month, log_budget y las variables de historial del director, escritor y actores, así como runtimeMinutes.
+#Los resultados de validación muestran que este modelo está capturando mejor las relaciones reales entre las variables y el éxito.
 
 #Graficamos la importancia del modelo
 ggplot(varImp(modelo_RF)$importance %>% 
@@ -1551,30 +1804,30 @@ cm_RF <- confusionMatrix(pred_RF_clase, test_rf$exito_factor, positive = "exito"
 print(cm_RF)
 #           Reference
 # Prediction fracaso exito
-#    fracaso    1004   502
-#    exito       214   386
-#Accuracy de 0.66 (mejor que en regresión con 0.647).
-#Sensibilidad de 0.435 vs 0.423 de regresión.
-#Especificidad de 0.824 vs 0.810 de regresión.
-#Se repite el patrón de que se identifican mejor los fracasos que los éxitos (1004 de 1218 fracasos bien identificados frente a 386 de 888 éxitos bien identificados)
+#    fracaso    1068   596
+#    exito       150   292
+#Accuracy de 0.646 (mejor que en regresión con 0.637).
+#Sensibilidad de 0.329 vs 0.417 de regresión.
+#Especificidad de 0.877 vs 0.800 de regresión.
+#Se repite el patrón de que se identifican mejor los fracasos que los éxitos (1068 de 1218 fracasos bien identificados frente a 292 de 888 éxitos bien identificados)
 
 precision_RF <- cm_RF$byClass["Pos Pred Value"]
 recall_RF <- cm_RF$byClass["Sensitivity"]
 f1_RF <- 2 * precision_RF * recall_RF / (precision_RF + recall_RF)
 cat("F1 score Random Forest:", round(f1_RF, 4), "\n")
-#F1-score de 0.519, mejor que el 0.503 de regresión logística.
+#F1-score de 0.439, peor que el 0.492 de regresión logística (aquí se detectan peor los éxitos que en reg.log)
 
 #AUC-ROC
 roc_RF <- roc(response = test_rf$exito_factor, predictor = pred_RF_prob,
               levels = c("fracaso", "exito"), direction = "<")
 auc(roc_RF)
-#AUC-ROC de 0.696, mejor que el 0.676 de regresión logística.
+#AUC de 0.697, bastante mejor que el 0.664 de regresión logística.
 
 #Curva ROC
 png("02_graficos_modelado/04_curva_ROC_RF.png", width = 800, height = 800, res = 150)
 plot(roc_RF, main = "Curva ROC - Random Forest", col = "steelblue")
 dev.off()
-#Prácticamente la misma forma que la de regresión logística aunque ligeramente mejor (del 0.676 al 0.696)
+#Prácticamente la misma forma que la de regresión logística aunque bastante mejor (del 0.664 al 0.698)
 
 #Visualizamos el error OOB (estimación del error de generalización que Random Forest calcula internamente sin necesidad de cross-validation)
 RF_final <- modelo_RF$finalModel
@@ -1602,11 +1855,12 @@ ggsave("02_graficos_modelado/05_oob_error_RF.png", width = 8, height = 5, dpi = 
 #El patrón de clasificación de fracasos y éxitos visto en los valores de especificidad y sensibilidad se corroboran con este gráfico.
 
 ## Resumen de conclusiones:
-#AUC-ROC: 0.696
-#F1: 0.519
-#Accuracy: 0.66
-#Sensibilidad: 0.435
-#Especificidad: 0.824
+#AUC (CV): 0.685
+#AUC (test): 0.697
+#F1: 0.439
+#Accuracy: 0.646
+#Sensibilidad: 0.329
+#Especificidad: 0.877
 
 # 3. XGBoost.
 
@@ -1765,7 +2019,6 @@ dev.off()
 #Accuracy: 0.662
 #Sensibilidad: 0.444
 #Especificidad: 0.822
-
 ### 
 #XGBoost tiene el mejor AUC-ROC en CV y en test, aunque los resultados con RF no difieren mucho, lo que sugiere que
 #ambos modelos son equivalentes en capacidad predictiva real. El patrón de sesgo hacia fracasos se mantiene en los 3
@@ -1970,9 +2223,9 @@ dev.off()
 
 
 #Test de DeLong (compara si dos AUCs son significativamente distintos entre sí)
-roc.test(roc_RF, roc_RLog)   # RF vs Logística. p-valor de 0.01763 < 0.05 --> Diferencia de AUCs estadísticamente significativa
-roc.test(roc_XGB, roc_RLog)  # XGBoost vs Logística. p-valor de  0.0008046 < 0.05 --> Diferencia de AUCs estadísticamente significativa
-roc.test(roc_RF, roc_XGB)   # RF vs XGBoost. p-valor de 0.228 > 0.05 --> Diferencia de AUCs no estadísticamente significativa (modelos equivalentes en capacidad predictiva real)
+roc.test(roc_RF, roc_RLog)   # RF vs Logística. p-valor de 5.729e-05 < 0.05 --> Diferencia de AUCs estadísticamente significativa
+roc.test(roc_XGB, roc_RLog)  # XGBoost vs Logística. p-valor de 1.385e-05 < 0.05 --> Diferencia de AUCs estadísticamente significativa
+roc.test(roc_RF, roc_XGB)   # RF vs XGBoost. p-valor de 0.316 > 0.05 --> Diferencia de AUCs no estadísticamente significativa (modelos equivalentes en capacidad predictiva real)
 
 #Los modelos basados en árboles (RF y XGB) superan significativamente a la regresión logística según el test de DeLong (p < 0.05 en ambos casos), mientras que la
-#diferencia entre RF y XGB no es estadísticamente significativa (p=0.228), confirmando que ambos modelos son equivalentes en capacidad predictiva para este problema.
+#diferencia entre RF y XGB no es estadísticamente significativa (p=0.316), confirmando que ambos modelos son equivalentes en capacidad predictiva para este problema.
