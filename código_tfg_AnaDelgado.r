@@ -620,7 +620,7 @@ ggplot(datos, aes(x=log_ROI)) +
     theme_minimal()
 
 ggsave("02_graficos_EDA/01_distribucion_logROI.png", width = 8, height = 5, dpi = 300)
-
+skewness(datos$log_ROI) # asimetría de -0,385 
 # COMENTARIOS.
 #La línea roja vertical en 0 indica el punto donde log(ROI+1) = 0, es decir ROI = 0, que es cuando la película
 #exactamente recupera su inversión. Las películas a la izquierda de esa línea pierden dinero y las de la derecha ganan.
@@ -1122,8 +1122,11 @@ ggsave("02_graficos_EDA/25_ABivariante_escritor.png", width = 8, height = 5, dpi
 
 #Estudiar las relaciones entre todas las variables numéricas entre sí. Matriz de correlaciones y evaluar multicolinealidad
 
-vars_numericas <- datos[, .(log_budget, decade, runtimeMinutes, num_genres, num_directors, num_actores, is_major,
-  director_num_films, director_roi_medio, writer_num_films, writer_roi_medio, actor1_num_films, actor1_roi_medio,
+#Convertimos runtimeMissing a entero, pues necesitaremos que sea continua para los 3 modelos y así podemos incluirla en la matriz de correlaciones
+datos[, runtimeMissing := as.integer(as.character(runtimeMissing))]
+
+vars_numericas <- datos[, .(log_budget, decade, runtimeMinutes, runtimeMissing, num_genres, num_directors, num_actores, num_writers,
+  is_major, director_num_films, director_roi_medio, writer_num_films, writer_roi_medio, actor1_num_films, actor1_roi_medio,
   actor2_num_films, actor2_roi_medio, actor3_num_films, actor3_roi_medio, genre_drama, genre_comedy, genre_action,
   genre_crime, genre_adventure, genre_romance, genre_thriller, genre_horror, genre_mystery,
   genre_fantasy, genre_biography, genre_family, genre_scifi, genre_animation, genre_other,
@@ -1145,9 +1148,11 @@ normalidad
 # log_budget         -1.3079471    5.421494
 # decade             -0.3563105    2.276940
 # runtimeMinutes      1.3951838    7.709784
+# runtimeMissing      9.9150415   99.308047
 # num_genres         -1.0520119    2.696420
 # num_directors      25.9157226 1200.451923
 # num_actores        -8.0831327   67.911016
+# num_writers         4.4443896   45.528228
 # is_major            0.9977741    1.995553
 # director_num_films  3.4707006   20.623100
 # director_roi_medio -0.4447586    5.436799
@@ -1326,9 +1331,6 @@ saveRDS(datos, "02_datos_post_EDA.rds")
 dir.create("02_graficos_modelado", showWarnings = FALSE)
 
 # Preparaciones para los 3 modelos.
-
-#Convertimos runtimeMissing a entero, pues necesitaremos que sea continua para los 3 modelos
-datos[, runtimeMissing := as.integer(as.character(runtimeMissing))]
 
 #Creamos una variable idéntica a éxito pero con niveles explícitos (necesaria para Regresión logística y Random Forest)
 datos[, exito_factor := factor(ifelse(exito == 1, "exito", "fracaso"), levels = c("fracaso", "exito"))]
@@ -1575,6 +1577,7 @@ for (v in vars_imputar) {
 
 datos_rf <- copy(datos_imputados_completo)
 datos_RLogistica <- copy(datos_imputados_completo)
+datos_XGB_imp <- copy(datos_imputados_completo)
 
 
 # Definimos el control de cross validation (igual para los 3 modelos)
@@ -1634,20 +1637,70 @@ for (v in vars_scale){
   test_RLog_scaled[, (v) := (get(v) - medias[v]) / desv_tip[v]]
 }
 
-table(train_RLog_scaled$num_directors_missing) # 8424 ceros y 5 unos.
-table(train_RLog_scaled$num_writers_missing) # 8333 ceros y 96 unos.
-
 # Variables que NO entran como predictoras
-vars_exc_RLog <- c("tconst", "primaryTitle", "log_ROI", "exito", "exito_factor",
-              "num_directors_missing", "actor3_num_films_missing", "num_writers_missing")
+vars_exc_RLog <- c("tconst", "primaryTitle", "log_ROI", "exito", "exito_factor")
 #excluimos log_ROI porque el éxito es una función directa del ROI (por cómo la definimos, éxito := ROI>=1), luego sería data leakage
-#excluimos num_directors_missing y num_writers_missing por falta de variabilidad (5 valores en 1 frente a 8424 en 0 y 96 valores en 1 frente a 8333 en 0, respectivamente)
-#que hace que el modelo no pueda estimar estos coeficientes con fiabilidad (se evaluó el modelo con dichas variables en él y había singularidades)
-#excluimos actor3_num_films_missing porque tiene una correlación con num_actores de un -0.999, lo que
-#indica una colinealidad casi perfecta. Si se incluyen ambas variables en el modelo, aparece otra singularidad.
 
 # Variables predictoras para regresión logística
 vars_predictoras_RLog <- setdiff(names(train_RLog_scaled), vars_exc_RLog)
+
+modelo_RLog_completo <- glm(
+  as.formula(paste("exito_factor ~", paste(vars_predictoras_RLog, collapse = " + "))),
+  data   = as.data.frame(train_RLog_scaled),
+  family = "binomial"
+)
+
+# Backward selection
+modelo_RLog_backward <- step(modelo_RLog_completo, direction = "backward", trace = 0)
+summary(modelo_RLog_backward)
+# Coefficients:
+#                            Estimate Std. Error z value Pr(>|z|)    
+# (Intercept)                -0.97321    0.09120 -10.671  < 2e-16 ***
+# runtimeMinutes              0.33293    0.02835  11.745  < 2e-16 ***
+# is_major                    0.61796    0.05818  10.621  < 2e-16 ***
+# director_roi_medio          0.10097    0.02397   4.212 2.53e-05 ***
+# num_writers                 0.13947    0.02615   5.333 9.65e-08 ***
+# writer_num_films            0.05244    0.02706   1.938 0.052600 .  
+# writer_roi_medio            0.12025    0.02390   5.032 4.85e-07 ***
+# actor1_roi_medio            0.08955    0.02368   3.782 0.000155 ***
+# actor2_roi_medio            0.07431    0.02348   3.165 0.001551 ** 
+# actor3_num_films            0.10576    0.03288   3.216 0.001300 ** 
+# num_genres                 -0.10793    0.02937  -3.675 0.000238 ***
+# genre_comedy                0.50702    0.05597   9.059  < 2e-16 ***
+# genre_action                0.23592    0.06566   3.593 0.000327 ***
+# genre_adventure             0.26505    0.07385   3.589 0.000332 ***
+# genre_romance               0.25987    0.07134   3.643 0.000270 ***
+# genre_thriller              0.36801    0.07116   5.171 2.32e-07 ***
+# genre_horror                0.63250    0.08271   7.648 2.05e-14 ***
+# genre_mystery               0.30089    0.08994   3.345 0.000822 ***
+# genre_family                0.28463    0.10213   2.787 0.005323 ** 
+# genre_animation             0.36933    0.11501   3.211 0.001322 ** 
+# log_budget                 -0.32370    0.03245  -9.974  < 2e-16 ***
+# writer_roi_medio_missing   -0.18136    0.05933  -3.057 0.002237 ** 
+# actor1_roi_medio_missing   -0.12302    0.05453  -2.256 0.024082 *  
+# actor3_roi_medio_missing    0.15531    0.07138   2.176 0.029577 *  
+# director_num_films_missing -1.94649    1.15639  -1.683 0.092327 .  
+# actor2_num_films_missing    0.42564    0.20130   2.114 0.034481 *  
+# release_month6              0.31144    0.09019   3.453 0.000554 ***
+# release_month7              0.33449    0.09104   3.674 0.000239 ***
+# release_month9             -0.15681    0.08110  -1.933 0.053180 .  
+# release_month10            -0.24088    0.08031  -2.999 0.002705 ** 
+# release_month11             0.17255    0.08826   1.955 0.050575 .  
+# release_month12             0.22893    0.08134   2.815 0.004884 ** 
+# original_languagefr        -0.84581    0.14875  -5.686 1.30e-08 ***
+# original_languagehi        -0.24203    0.13053  -1.854 0.063724 .  
+# original_languageru        -0.44527    0.17646  -2.523 0.011627 *  
+# ---
+# Signif. codes:  0 '***' 0.001 '**' 0.01 '*' 0.05 '.' 0.1 ' ' 1
+
+# (Dispersion parameter for binomial family taken to be 1)
+
+#     Null deviance: 11478  on 8428  degrees of freedom
+# Residual deviance: 10705  on 8394  degrees of freedom
+# AIC: 10775
+
+vars_backward <- names(coef(modelo_RLog_backward))[-1]  # -1 para excluir el intercepto
+vars_predictoras_RLog <- vars_backward
 
 # 1.2. Entrenamiento del modelo con cross validation
 
@@ -1664,41 +1717,49 @@ modelo_RLog <- train(
 # 1.3. Resultados
 
 print(modelo_RLog) #Resultados de cross validation
-#Modelo entrenado con 8429 observaciones y 58 predictoras. AUC en cross validation es 0.659, con sensibilidad de 0.424
-#y especificidad de 0.783. Esto sugiere que el modelo identifica mucho mejor los fracasos (especificidad alta) que los éxitos (sensibilidad baja)
+#Modelo entrenado con 8429 observaciones y 34 predictoras. AUC en cross validation es 0.664, con sensibilidad de 0.429
+#y especificidad de 0.792. Esto sugiere que el modelo identifica mucho mejor los fracasos (especificidad alta) que los éxitos (sensibilidad baja)
 
 # Resumen del modelo
 summary(modelo_RLog)
-#Resultados de los coeficientes (solamente se muestran los que son significativos, es decir, p-valor<0.05)
+#Resultados de los coeficientes (mismos que en el summary anterior)
 # Coefficients:
-#                             Estimate Std. Error z value Pr(>|z|)    
-# (Intercept)                -0.795275   0.209192  -3.802 0.000144 ***   
-# runtimeMinutes              0.339255   0.030612  11.082  < 2e-16 ***
-# is_major                    0.604243   0.059821  10.101  < 2e-16 ***
-# director_roi_medio          0.100768   0.023983   4.202 2.65e-05 ***
-# num_writers                 0.140107   0.027028   5.184 2.18e-07 ***
-# writer_num_films            0.069411   0.028863   2.405 0.016180 *  
-# writer_roi_medio            0.117889   0.023978   4.916 8.81e-07 ***
-# actor1_roi_medio            0.088573   0.023743   3.730 0.000191 ***
-# actor2_roi_medio            0.073819   0.023561   3.133 0.001730 ** 
-# actor3_num_films            0.110008   0.033471   3.287 0.001014 ** 
-# genre_comedy                0.455866   0.087055   5.237 1.64e-07 ***
-# genre_action                0.205048   0.093100   2.202 0.027634 *  
-# genre_adventure             0.219299   0.096502   2.272 0.023058 *  
-# genre_romance               0.218198   0.094383   2.312 0.020787 *  
-# genre_thriller              0.329519   0.094871   3.473 0.000514 ***
-# genre_horror                0.576986   0.106746   5.405 6.47e-08 ***
-# genre_mystery               0.271712   0.107240   2.534 0.011287 *  
-# genre_family                0.242673   0.120821   2.009 0.044586 *  
-# genre_animation             0.340334   0.135744   2.507 0.012170 *  
-# log_budget                 -0.340706   0.036377  -9.366  < 2e-16 ***
-# writer_roi_medio_missing   -0.175928   0.061963  -2.839 0.004522 ** 
-# actor3_roi_medio_missing    0.152788   0.071986   2.122 0.033798 *  
-# release_month6              0.245956   0.122680   2.005 0.044979 *  
-# release_month7              0.267106   0.123050   2.171 0.029953 *  
-# release_month10            -0.302949   0.115160  -2.631 0.008521 ** 
-# original_languagefr        -0.837067   0.152315  -5.496 3.89e-08 ***
-# original_languageru        -0.458267   0.180476  -2.539 0.011110 * 
+#                            Estimate Std. Error z value Pr(>|z|)    
+# (Intercept)                -0.97321    0.09120 -10.671  < 2e-16 ***
+# runtimeMinutes              0.33293    0.02835  11.745  < 2e-16 ***
+# is_major                    0.61796    0.05818  10.621  < 2e-16 ***
+# director_roi_medio          0.10097    0.02397   4.212 2.53e-05 ***
+# num_writers                 0.13947    0.02615   5.333 9.65e-08 ***
+# writer_num_films            0.05244    0.02706   1.938 0.052600 .  
+# writer_roi_medio            0.12025    0.02390   5.032 4.85e-07 ***
+# actor1_roi_medio            0.08955    0.02368   3.782 0.000155 ***
+# actor2_roi_medio            0.07431    0.02348   3.165 0.001551 ** 
+# actor3_num_films            0.10576    0.03288   3.216 0.001300 ** 
+# num_genres                 -0.10793    0.02937  -3.675 0.000238 ***
+# genre_comedy                0.50702    0.05597   9.059  < 2e-16 ***
+# genre_action                0.23592    0.06566   3.593 0.000327 ***
+# genre_adventure             0.26505    0.07385   3.589 0.000332 ***
+# genre_romance               0.25987    0.07134   3.643 0.000270 ***
+# genre_thriller              0.36801    0.07116   5.171 2.32e-07 ***
+# genre_horror                0.63250    0.08271   7.648 2.05e-14 ***
+# genre_mystery               0.30089    0.08994   3.345 0.000822 ***
+# genre_family                0.28463    0.10213   2.787 0.005323 ** 
+# genre_animation             0.36933    0.11501   3.211 0.001322 ** 
+# log_budget                 -0.32370    0.03245  -9.974  < 2e-16 ***
+# writer_roi_medio_missing   -0.18136    0.05933  -3.057 0.002237 ** 
+# actor1_roi_medio_missing   -0.12302    0.05453  -2.256 0.024082 *  
+# actor3_roi_medio_missing    0.15531    0.07138   2.176 0.029577 *  
+# director_num_films_missing -1.94649    1.15639  -1.683 0.092327 .  
+# actor2_num_films_missing    0.42564    0.20130   2.114 0.034481 *  
+# release_month6              0.31144    0.09019   3.453 0.000554 ***
+# release_month7              0.33449    0.09104   3.674 0.000239 ***
+# release_month9             -0.15681    0.08110  -1.933 0.053180 .  
+# release_month10            -0.24088    0.08031  -2.999 0.002705 ** 
+# release_month11             0.17255    0.08826   1.955 0.050575 .  
+# release_month12             0.22893    0.08134   2.815 0.004884 ** 
+# original_languagefr        -0.84581    0.14875  -5.686 1.30e-08 ***
+# original_languagehi        -0.24203    0.13053  -1.854 0.063724 .  
+# original_languageru        -0.44527    0.17646  -2.523 0.011627 *  
 #Los resultados son coherentes con lo visto en el EDA. Por ejemplo, que is_major empuja mucho hacia éxito, así como los géneros de horror,
 #comedy y animation o la duración de la película. log_budget empuja hacia fracaso, así como el mes de octubre o el idioma francés.
 
@@ -1711,15 +1772,15 @@ cm_RLog <- confusionMatrix(pred_log_clase, test_RLog_scaled$exito_factor, positi
 print(cm_RLog)
 #           Reference
 # Prediction fracaso exito
-#    fracaso     972   514
-#    exito       246   374
-#Accuracy de 0.639 con diferencia estadísticamente significativa (p-valor < 0.05)
-#sensibilidad de 0.421 (el modelo solo identifica correctamente el 42,1% de los éxitos reales)
-#especificidad de 0.798 (el modelo identifica correctamente el 79,8% de los fracasos)
+#    fracaso     962   507
+#    exito       256   381
+#Accuracy de 0.638 con diferencia estadísticamente significativa (p-valor < 0.05)
+#sensibilidad de 0.429 (el modelo solo identifica correctamente el 42,9% de los éxitos reales)
+#especificidad de 0.790 (el modelo identifica correctamente el 79,0% de los fracasos)
 #Esto confirma que el modelo es conservador, es decir, tiende a predecir fracaso. 
 
-#De 1218 fracasos reales (en test), se detectan correctamente 972 y erróneamente 246.
-#De 888 éxitos reales (en test), se detectan correctamente 374 y erróneamente 514.
+#De 1218 fracasos reales (en test), se detectan correctamente 962 y erróneamente 256.
+#De 888 éxitos reales (en test), se detectan correctamente 381 y erróneamente 507.
 
 #F1 score
 precision_RLog <- cm_RLog$byClass["Pos Pred Value"]
@@ -1727,7 +1788,7 @@ recall_RLog <- cm_RLog$byClass["Sensitivity"]
 
 f1_RLog <- 2 * precision_RLog * recall_RLog / (precision_RLog + recall_RLog)
 cat("F1 score:", round(f1_RLog, 4), "\n")
-#F1 = 0.496, esto refleja el bajo recall (la sensibilidad)
+#F1 = 0.500, esto refleja el bajo recall (la sensibilidad)
 
 # AUC-ROC
 roc_RLog <- roc(response = test_RLog_scaled$exito_factor,
@@ -1735,8 +1796,8 @@ roc_RLog <- roc(response = test_RLog_scaled$exito_factor,
               levels = c("fracaso", "exito"),
               direction = "<")
 auc(roc_RLog)
-#AUC-ROC = 0.668. Es mejor que el azar aunque tiene margen de mejora y consistente
-#con el 0.659 del cross.validation, lo que indica que el modelo no está sobreajustado
+#AUC-ROC = 0.669. Es mejor que el azar aunque tiene margen de mejora y consistente
+#con el 0.664 del cross.validation, lo que indica que el modelo no está sobreajustado
 
 # Curva ROC
 png("02_graficos_modelado/01_curva_ROC_RLogistica.png", width = 800, height = 800, res = 150)
@@ -1747,12 +1808,12 @@ dev.off()
 #coherente con la matriz de confusión.
 
 ## Resumen de conclusiones:
-#AUC (CV): 0.659
-#AUC (test): 0.668
-#F1: 0.496
-# Accuracy: 0.639
-#Sensibilidad: 0.421
-#Especificidad: 0.798
+#AUC (CV): 0.664
+#AUC (test): 0.669
+#F1: 0.500
+# Accuracy: 0.638
+#Sensibilidad: 0.429
+#Especificidad: 0.790
 
 
 # 2. Random Forest.
@@ -2078,8 +2139,157 @@ dev.off()
 #ambos modelos son equivalentes en capacidad predictiva real. El patrón de sesgo hacia fracasos se mantiene en los 3
 #modelos (especificidad mayor o igual que 0.80 en los 3 modelos y sensibilidad entre 0.42 y 0.45).
 
+# 3.6. XGBoost con imputación PMM (mismos hiperparámetros)
+datos_XGB_imp[, release_month := as.integer(release_month)]
 
-# 3.6. Importancia de variables nativa de XGBoost
+dummies_idioma_XGB_imp <- as.data.table(model.matrix(~ original_language, data = datos_XGB_imp))
+dummies_idioma_XGB_imp[, `(Intercept)` := NULL]
+datos_XGB_imp <- cbind(datos_XGB_imp, dummies_idioma_XGB_imp)
+datos_XGB_imp[, "original_language" := NULL]
+
+train_XGB_imp <- datos_XGB_imp[train_index, ]
+test_XGB_imp  <- datos_XGB_imp[-train_index, ]
+
+vars_predictoras_XGB_imp <- setdiff(names(train_XGB_imp), vars_exc_XGB)
+
+set.seed(42)
+modelo_XGB_imp <- train(
+  x = as.data.frame(train_XGB_imp[, ..vars_predictoras_XGB_imp]),
+  y = train_XGB_imp$exito_factor,
+  method    = "xgbTree",
+  trControl = ctrl,
+  tuneGrid  = tune_grid_XGB_final,  # mismos hiperparámetros óptimos
+  metric    = "ROC",
+  verbosity = 0
+)
+print(modelo_XGB_imp)
+# AUC de 0,683 en CV, con especificidad de 0,411 y sensibilidad de 0,818
+
+pred_XGB_imp_prob  <- predict(modelo_XGB_imp, newdata = as.data.frame(test_XGB_imp[, ..vars_predictoras_XGB_imp]), type = "prob")[, "exito"]
+pred_XGB_imp_clase <- predict(modelo_XGB_imp, newdata = as.data.frame(test_XGB_imp[, ..vars_predictoras_XGB_imp]))
+
+cm_XGB_imp <- confusionMatrix(pred_XGB_imp_clase, test_XGB_imp$exito_factor, positive = "exito")
+print(cm_XGB_imp)
+#           Reference
+# Prediction fracaso exito
+#    fracaso    1008   495
+#    exito       210   393
+#Accuracy de 0,665 con sensibilidad de 0,443 y especificidad de 0,828
+
+precision_XGB_imp <- cm_XGB_imp$byClass["Pos Pred Value"]
+recall_XGB_imp    <- cm_XGB_imp$byClass["Sensitivity"]
+f1_XGB_imp        <- 2 * precision_XGB_imp * recall_XGB_imp / (precision_XGB_imp + recall_XGB_imp)
+cat("F1 score XGBoost:", round(f1_XGB_imp, 4), "\n")
+# F1 score de 0,527
+
+roc_XGB_imp <- roc(response  = test_XGB_imp$exito_factor,
+                   predictor = pred_XGB_imp_prob,
+                   levels    = c("fracaso", "exito"),
+                   direction = "<")
+auc(roc_XGB_imp)
+# AUC de 0,701
+
+# Test de DeLong entre esta variante de XGBoost y la original (que mantiene los valores perdidos)
+roc.test(roc_XGB, roc_XGB_imp) #p-valor = 0.6472, no significativamente distintos
+
+
+# 3.7. XGBoost con imputación PMM (con búsqueda de hiperparámetros)
+
+# Búsqueda de hiperparámetros. (1)
+
+tune_grid_XGB <- expand.grid(
+  nrounds          = c(100, 200, 300),  # número de árboles
+  max_depth        = c(3, 5, 7),        # profundidad máxima de cada árbol
+  eta              = c(0.01, 0.05, 0.1),# learning rate
+  gamma            = 0,                 # umbral mínimo de ganancia para hacer un split (lo fijamos en 0)
+  colsample_bytree = c(0.6, 0.8),       # fracción de variables por árbol, introduce aleatoriedad (como mtry en RF) reduciendo la correlación entre árboles y mejorando la generalización
+  min_child_weight = 1,                 # mínimo de observaciones en nodo hoja (lo fijamos en 1)
+  subsample        = c(0.7, 0.9)        # fracción de observaciones por árbol, igual que colsample_bytree pero por filas
+)
+
+nrow(tune_grid_XGB) # Para saber cuántas combinaciones estamos probando, 3 × 3 × 3 × 1 × 2 × 1 × 2 = 108 combinaciones × 5 folds = 540 modelos
+
+# Entrenamiento (1)
+
+# Usamos el mismo ctrl que en los modelos anteriores
+set.seed(42)
+modelo_XGB_imp1 <- train(
+  x = as.data.frame(train_XGB_imp[, ..vars_predictoras_XGB_imp]),
+  y = train_XGB_imp$exito_factor,
+  method    = "xgbTree",
+  trControl = ctrl,           
+  tuneGrid  = tune_grid_XGB,
+  metric    = "ROC",
+  verbosity = 0
+)
+
+# Hiperparámetros óptimos y resultados de CV
+print(modelo_XGB_imp1)
+#Los hiperparámetros óptimos son nrounds=200, max_depth = 5, eta = 0.05, colsample_bytree = 0.6 y subsample = 0.9. Con dichos hiperparámetros óptimos se tiene un AUC-ROC de 0.682.
+#Al tener óptimos en el extremo de colsample_bytree, reentrenamos buscando alrededor de este valor puesto que el modelo podría seguir mejorando en esa dirección y explorar más allá podría dar mejores resultados.
+#La segunda búsqueda nos asegura encontrar el verdadero óptimo en vez de simplemente el mejor valor dentro de un rango insuficiente. Mantenemos los óptimos obtenidos para el resto de hiperparámetros.
+
+plot(modelo_XGB_imp1) # visualiza cómo varía el AUC-ROC según los hiperparámetros
+
+# Búsqueda de hiperparámetros (2)
+tune_grid_XGB_imp_v2 <- expand.grid(
+  nrounds          = 200,
+  max_depth        = 5,
+  eta              = 0.05,
+  gamma            = 0,
+  colsample_bytree = c(0.4, 0.6),
+  min_child_weight = 1,
+  subsample        = 0.9
+)
+
+nrow(tune_grid_XGB_imp_v2) # 2 combinaciones x 5 folds = 10 modelos
+
+# Entrenamiento (2)
+set.seed(42)
+modelo_XGB_imp2 <- train(
+  x = as.data.frame(train_XGB_imp[, ..vars_predictoras_XGB_imp]),
+  y = train_XGB_imp$exito_factor,
+  method    = "xgbTree",
+  trControl = ctrl,         
+  tuneGrid  = tune_grid_XGB_imp_v2,
+  metric    = "ROC",
+  verbosity = 0
+)
+
+# Hiperparámetros óptimos y resultados de CV
+print(modelo_XGB_imp2)
+#Se mantiene el óptimo de 0,6 en colsample_bytree y un AUC de 0.682 en CUV
+
+pred_XGB_imp_prob  <- predict(modelo_XGB_imp2, newdata = as.data.frame(test_XGB_imp[, ..vars_predictoras_XGB_imp]), type = "prob")[, "exito"]
+pred_XGB_imp_clase <- predict(modelo_XGB_imp2, newdata = as.data.frame(test_XGB_imp[, ..vars_predictoras_XGB_imp]))
+
+cm_XGB_imp <- confusionMatrix(pred_XGB_imp_clase, test_XGB_imp$exito_factor, positive = "exito")
+print(cm_XGB_imp)
+#           Reference
+# Prediction fracaso exito
+#    fracaso     994   479
+#    exito       224   409
+# Accuracy de 0.666, sensibilidad de 0.461 y especificidad de 0.816
+
+precision_XGB_imp <- cm_XGB_imp$byClass["Pos Pred Value"]
+recall_XGB_imp    <- cm_XGB_imp$byClass["Sensitivity"]
+f1_XGB_imp        <- 2 * precision_XGB_imp * recall_XGB_imp / (precision_XGB_imp + recall_XGB_imp)
+cat("F1 score XGBoost:", round(f1_XGB_imp, 4), "\n")
+#F1 de 0.538
+
+roc_XGB_imp <- roc(response  = test_XGB_imp$exito_factor,
+                   predictor = pred_XGB_imp_prob,
+                   levels    = c("fracaso", "exito"),
+                   direction = "<")
+auc(roc_XGB_imp)
+# AUC de 0.696
+
+# Test de DeLong entre esta variante de XGBoost y la original (que mantiene los valores perdidos)
+roc.test(roc_XGB, roc_XGB_imp)
+# p-valor de 0.2224, luego no son estadísticamente significativos.
+
+
+# 3.8. Importancia de variables nativa de XGBoost
 
 xgb_booster <- modelo_XGB$finalModel #Extraemos el modelo interno xgb.Booster
 
@@ -2118,7 +2328,7 @@ ggplot(xgb_imp_plot, aes(x = reorder(Feature, Gain), y = Gain)) +
 
 ggsave("02_graficos_modelado/08_importancia_variables_XGB.png", width = 8, height = 8, dpi = 300)
 
-# 3.7. SHAP values
+# 3.9. SHAP values
 
 #Los SHAP values te dicen cuánto contribuye cada variable a cada predicción individual, con signo positivo si empuja hacia éxito y negativo si empuja hacia fracaso.
 #Miden cuánto desplaza cada variable la predicción final de cada observación individualmente.
@@ -2277,8 +2487,8 @@ dev.off()
 
 
 #Test de DeLong (compara si dos AUCs son significativamente distintos entre sí)
-roc.test(roc_RF, roc_RLog)   # RF vs Logística. p-valor de 0.0001873 < 0.05 --> Diferencia de AUCs estadísticamente significativa
-roc.test(roc_XGB, roc_RLog)  # XGBoost vs Logística. p-valor de 9.258e-05 < 0.05 --> Diferencia de AUCs estadísticamente significativa
+roc.test(roc_RF, roc_RLog)   # RF vs Logística. p-valor de 0.0003085 < 0.05 --> Diferencia de AUCs estadísticamente significativa
+roc.test(roc_XGB, roc_RLog)  # XGBoost vs Logística. p-valor de 0.0001549 < 0.05 --> Diferencia de AUCs estadísticamente significativa
 roc.test(roc_RF, roc_XGB)   # RF vs XGBoost. p-valor de 0.6311 > 0.05 --> Diferencia de AUCs no estadísticamente significativa (modelos equivalentes en capacidad predictiva real)
 
 #Los modelos basados en árboles (RF y XGB) superan significativamente a la regresión logística según el test de DeLong (p < 0.05 en ambos casos), mientras que la
